@@ -1,7 +1,9 @@
-# Use official PHP image with Apache
 FROM php:8.1-apache
 
-# Install system dependencies
+# Set memory limit for Composer
+ENV COMPOSER_MEMORY_LIMIT=-1
+
+# Install system dependencies and PHP extensions
 RUN apt-get update && apt-get install -y \
     git \
     curl \
@@ -14,8 +16,6 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     libjpeg-dev \
     libfreetype6-dev \
-    nodejs \
-    npm \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-install \
         pdo_mysql \
@@ -32,62 +32,57 @@ RUN apt-get update && apt-get install -y \
 RUN a2enmod rewrite headers
 
 # Install Composer
-COPY --from=composer:2.5 /usr/bin/composer /usr/bin/composer
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
 # Set working directory
 WORKDIR /var/www/html
 
-# Copy composer files first (for better Docker layer caching)
+# Copy composer files
 COPY composer.json composer.lock ./
 
-# Install PHP dependencies (should work now!)
-RUN composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader
+# Install PHP dependencies with proper flags
+RUN composer install \
+    --no-dev \
+    --prefer-dist \
+    --no-interaction \
+    --optimize-autoloader \
+    --ignore-platform-reqs \
+    --no-scripts \
+    --no-cache
 
-# Copy package.json for Node dependencies
-COPY package.json package-lock.json* ./
-
-# Install Node dependencies and build assets
-RUN if [ -f "package.json" ]; then \
-        npm ci --only=production || npm install --only=production; \
-        npm run production; \
-    fi
-
-# Copy rest of the application code
+# Copy rest of application
 COPY . .
+
+# Set up Apache document root
+ENV APACHE_DOCUMENT_ROOT /var/www/html/public
+RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf
+RUN sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
+
+# Create required directories first
+RUN mkdir -p storage/logs \
+    storage/framework/cache \
+    storage/framework/sessions \
+    storage/framework/views \
+    bootstrap/cache
 
 # Set permissions
 RUN chown -R www-data:www-data /var/www/html && \
     chmod -R 775 storage bootstrap/cache
 
-# Create storage directories if they don't exist
-RUN mkdir -p storage/logs storage/framework/cache storage/framework/sessions storage/framework/views
-
-# Generate application key if .env doesn't exist
+# Laravel setup - ensure .env exists
 RUN if [ ! -f .env ]; then cp .env.example .env; fi
-RUN php artisan key:generate
 
-# Optimize Laravel for production
-RUN php artisan config:cache || true
-RUN php artisan route:cache || true
-RUN php artisan view:cache || true
+# Generate app key
+RUN php artisan key:generate --force
 
-# Create storage symlink
-RUN php artisan storage:link || true
+# Run post-install Composer scripts
+RUN composer run-script post-autoload-dump
 
-# Apache vhost config
-RUN echo '<VirtualHost *:80>\n\
-    DocumentRoot /var/www/html/public\n\
-    <Directory /var/www/html/public>\n\
-        Options -Indexes +FollowSymLinks\n\
-        AllowOverride All\n\
-        Require all granted\n\
-    </Directory>\n\
-    ErrorLog ${APACHE_LOG_DIR}/error.log\n\
-    CustomLog ${APACHE_LOG_DIR}/access.log combined\n\
-</VirtualHost>' > /etc/apache2/sites-available/000-default.conf
+# Clear and cache config for production
+RUN php artisan config:clear
+RUN php artisan cache:clear
+RUN php artisan view:clear
 
-# Expose port 80
 EXPOSE 80
 
-# Start Apache in the foreground
 CMD ["apache2-foreground"]
