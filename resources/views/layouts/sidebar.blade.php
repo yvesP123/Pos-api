@@ -84,8 +84,13 @@
                 </a>
             </li>
             <li>
-                <a href="{{ route("setting.index") }}">
+                <a href="{{ route('setting.index') }}">
                     <i class="fa fa-cogs"></i> <span>Settings</span>
+                </a>
+            </li>
+             <li>
+                <a href="{{ route('license.renew') }}">
+                    <i class="fa fa-users"></i> <span>Renew Key</span>
                 </a>
             </li>
             @else
